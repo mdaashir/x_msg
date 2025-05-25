@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 import pandas as pd
 from time import sleep
+from requests.exceptions import ConnectionError, ConnectTimeout
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,7 +19,7 @@ def fetch_tweets(keyword, max_count=100, retries=3):
         try:
             tweet_data = client.search_recent_tweets(query=keyword, max_results=max_count, tweet_fields=['id', 'text', 'author_id', 'created_at', 'lang', 'public_metrics', 'entities'])
             return tweet_data
-        except ConnectionError as connection_error:
+        except (ConnectionError, ConnectTimeout) as connection_error:
             print(f"Connection error: {connection_error}. Retrying ({i+1}/{retries})...")
             sleep(5)
     raise Exception("Failed to fetch tweets after several retries")
