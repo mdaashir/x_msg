@@ -1,5 +1,6 @@
 import tweepy
 import os
+import argparse
 from dotenv import load_dotenv
 import pandas as pd
 from pathlib import Path
@@ -27,6 +28,12 @@ EXPANSIONS = ['author_id']
 # fewer than MIN_RESULTS still has to ask for MIN_RESULTS and trim afterwards.
 MIN_RESULTS = 10
 MAX_RESULTS = 100
+
+DEFAULT_PER_QUERY = 100
+
+# Guards against a typo turning a run into an accidental quota burn, while still
+# allowing targets above MAX_RESULTS, which pagination fetches across pages.
+MAX_PER_QUERY = 1000
 
 OUTPUT_NAME = 'tweets_all.csv'
 
@@ -136,6 +143,37 @@ def write_export(records, path):
     return len(df)
 
 
+def positive_count(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}")
+    if not 1 <= number <= MAX_PER_QUERY:
+        raise argparse.ArgumentTypeError(
+            f"must be between 1 and {MAX_PER_QUERY}, got {number}")
+    return number
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description='Collect recent tweets for every term in a query file into one CSV.')
+    parser.add_argument(
+        '--queries',
+        default=str(BASE_DIR / 'queries.txt'),
+        help='file with one search term per line (default: queries.txt next to this script)')
+    parser.add_argument(
+        '--output',
+        default=OUTPUT_NAME,
+        help=f'CSV file to write (default: {OUTPUT_NAME})')
+    parser.add_argument(
+        '--tweets-per-query',
+        type=positive_count,
+        default=DEFAULT_PER_QUERY,
+        metavar='N',
+        help=f'tweets to collect per term (default: {DEFAULT_PER_QUERY})')
+    return parser.parse_args(argv)
+
+
 # Read queries from the text file next to this script, so the tool works
 # regardless of the directory it is launched from.
 def load_queries(path=None):
@@ -144,9 +182,10 @@ def load_queries(path=None):
         return [line.strip() for line in file if line.strip()]
 
 # Main Function
-def main():
-    queries = load_queries()
-    count = int(input("Enter the number of queries: "))
+def main(argv=None):
+    args = parse_args(argv)
+    queries = load_queries(args.queries)
+    print(f"Loaded {len(queries)} queries from {args.queries}")
 
     # One collection across every query, keyed by tweet id so a tweet that
     # matches several terms is recorded once and keeps all of them.
@@ -154,7 +193,7 @@ def main():
 
     for query in queries:
         try:
-            tweets, users = fetch_query(query, count)
+            tweets, users = fetch_query(query, args.tweets_per_query)
 
             if not tweets:
                 print(f"No tweets returned for query '{query}'")
@@ -182,8 +221,8 @@ def main():
         print("No tweets collected, nothing written.")
         return
 
-    written = write_export(records, OUTPUT_NAME)
-    print(f"{written} unique tweets saved to {OUTPUT_NAME}")
+    written = write_export(records, args.output)
+    print(f"{written} unique tweets saved to {args.output}")
 
 
 if __name__ == "__main__":
