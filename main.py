@@ -2,6 +2,7 @@ import tweepy
 import os
 from dotenv import load_dotenv
 import pandas as pd
+from pathlib import Path
 from time import sleep
 from requests.exceptions import ConnectionError, ConnectTimeout
 
@@ -12,6 +13,8 @@ bearer_token = os.getenv('BEARER_TOKEN')
 
 # Authenticate using the Bearer Token
 client = tweepy.Client(bearer_token=bearer_token, wait_on_rate_limit=True)
+
+BASE_DIR = Path(__file__).resolve().parent
 
 # Function to fetch tweets with retries
 def fetch_tweets(keyword, max_count=100, retries=3):
@@ -24,17 +27,18 @@ def fetch_tweets(keyword, max_count=100, retries=3):
             sleep(5)
     raise Exception("Failed to fetch tweets after several retries")
 
-# Read queries from the text file
-with open('queries.txt', 'r') as file:
-    queries = file.read().splitlines()
+# Read queries from the text file next to this script, so the tool works
+# regardless of the directory it is launched from.
+def load_queries(path=None):
+    query_file = Path(path) if path else BASE_DIR / 'queries.txt'
+    with open(query_file, encoding='utf-8') as file:
+        return [line.strip() for line in file if line.strip()]
 
 # Main Function
 def main():
+    queries = load_queries()
     count = int(input("Enter the number of queries: "))
     for query in queries:
-        # Skip empty lines
-        if query.strip() == "": continue
-    
         try:
             # Search for tweets for the current query
             tweets = fetch_tweets(query, count)
