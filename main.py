@@ -25,7 +25,9 @@ def fetch_tweets(keyword, max_count=100, retries=3):
         except (ConnectionError, ConnectTimeout) as connection_error:
             print(f"Connection error: {connection_error}. Retrying ({i+1}/{retries})...")
             sleep(5)
-    raise Exception("Failed to fetch tweets after several retries")
+    # Returning None lets the caller skip this query and continue with the rest,
+    # instead of raising a bare Exception that no caller handles.
+    return None
 
 # Read queries from the text file next to this script, so the tool works
 # regardless of the directory it is launched from.
@@ -42,6 +44,12 @@ def main():
         try:
             # Search for tweets for the current query
             tweets = fetch_tweets(query, count)
+
+            # A search that matches nothing returns a response with data set to
+            # None, which used to raise TypeError outside every handler.
+            if tweets is None or tweets.data is None:
+                print(f"No tweets returned for query '{query}'")
+                continue
 
             tweets_data = []
 
@@ -76,8 +84,10 @@ def main():
             df.to_csv(f'tweets_{safe_query}.csv', index=False)
             print(f"Tweets saved to tweets_{safe_query}.csv")
 
-        except tweepy.TweepyException as e:
-            print(f"Failed to fetch tweets for query '{query}': {e}")
+        except Exception as e:
+            # Each query is independent. A failure here must not stop the
+            # remaining queries, otherwise one bad term discards the whole run.
+            print(f"Failed to fetch tweets for query '{query}': {type(e).__name__}: {e}")
 
     print("All queries processed.")
 
