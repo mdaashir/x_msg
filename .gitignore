@@ -27,3 +27,6 @@ fabric.properties
 # Python Environment
 venv/*
 .env
+
+# Generated tweet exports
+tweets_*.csv
