@@ -23,6 +23,11 @@ USER_FIELDS = ['username', 'name', 'verified', 'public_metrics', 'created_at']
 # response, so no separate per-tweet user lookup is needed.
 EXPANSIONS = ['author_id']
 
+# The search endpoint rejects max_results outside this range, so a request for
+# fewer than MIN_RESULTS still has to ask for MIN_RESULTS and trim afterwards.
+MIN_RESULTS = 10
+MAX_RESULTS = 100
+
 
 def users_from_response(response):
     users = {}
@@ -33,23 +38,43 @@ def users_from_response(response):
 
 
 # Function to fetch tweets with retries
-def fetch_tweets(keyword, max_count=100, retries=3):
+def fetch_page(query, max_count, next_token=None, retries=3):
     for i in range(retries):
         try:
-            tweet_data = client.search_recent_tweets(
-                query=keyword,
+            return client.search_recent_tweets(
+                query=query,
                 max_results=max_count,
                 tweet_fields=TWEET_FIELDS,
                 user_fields=USER_FIELDS,
                 expansions=EXPANSIONS,
+                next_token=next_token,
             )
-            return tweet_data
         except (ConnectionError, ConnectTimeout) as connection_error:
             print(f"Connection error: {connection_error}. Retrying ({i+1}/{retries})...")
             sleep(5)
     # Returning None lets the caller skip this query and continue with the rest,
     # instead of raising a bare Exception that no caller handles.
     return None
+
+
+def fetch_query(query, target, retries=3):
+    """Collect up to `target` tweets for one query, following next_token pages."""
+    collected = []
+    users = {}
+    next_token = None
+    while len(collected) < target:
+        remaining = target - len(collected)
+        page_size = max(MIN_RESULTS, min(MAX_RESULTS, remaining))
+        response = fetch_page(query, page_size, next_token, retries)
+        if response is None or response.data is None:
+            break
+        collected.extend(response.data)
+        users.update(users_from_response(response))
+        next_token = (getattr(response, 'meta', None) or {}).get('next_token')
+        if not next_token:
+            break
+    return collected[:target], users
+
 
 # Read queries from the text file next to this script, so the tool works
 # regardless of the directory it is launched from.
@@ -65,18 +90,15 @@ def main():
     for query in queries:
         try:
             # Search for tweets for the current query
-            tweets = fetch_tweets(query, count)
+            tweets, users = fetch_query(query, count)
 
-            # A search that matches nothing returns a response with data set to
-            # None, which used to raise TypeError outside every handler.
-            if tweets is None or tweets.data is None:
+            if not tweets:
                 print(f"No tweets returned for query '{query}'")
                 continue
 
             tweets_data = []
-            users = users_from_response(tweets)
 
-            for tweet in tweets.data:
+            for tweet in tweets:
                 user = users.get(str(tweet.author_id))
                 followers = None
                 if user is not None:
