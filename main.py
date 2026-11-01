@@ -82,6 +82,14 @@ def main():
                 if user is not None:
                     followers = (getattr(user, 'public_metrics', None) or {}).get('followers_count')
 
+                # The raw entities object is a nested dict, which pandas writes as
+                # an unparseable Python repr. Keep only the hashtags as a
+                # pipe-separated list so the column is usable for analysis.
+                entities = tweet.entities or {}
+                hashtags = '|'.join(
+                    tag for tag in (h.get('tag', '') for h in (entities.get('hashtags') or [])) if tag
+                )
+
                 tweets_data.append({
                     'id': tweet.id,
                     'username': getattr(user, 'username', None) if user else None,
@@ -96,7 +104,7 @@ def main():
                     'reply_count': tweet.public_metrics['reply_count'],
                     'like_count': tweet.public_metrics['like_count'],
                     'quote_count': tweet.public_metrics['quote_count'],
-                    'entities': tweet.entities
+                    'hashtags': hashtags
                 })
 
             # Remove duplicates by data frame
