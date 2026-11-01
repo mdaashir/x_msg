@@ -28,6 +28,26 @@ EXPANSIONS = ['author_id']
 MIN_RESULTS = 10
 MAX_RESULTS = 100
 
+OUTPUT_NAME = 'tweets_all.csv'
+
+COLUMNS = [
+    'id',
+    'matched_queries',
+    'username',
+    'user_name',
+    'user_verified',
+    'user_followers',
+    'user_created_at',
+    'text',
+    'created_at',
+    'lang',
+    'retweet_count',
+    'reply_count',
+    'like_count',
+    'quote_count',
+    'hashtags',
+]
+
 
 def users_from_response(response):
     users = {}
@@ -76,6 +96,46 @@ def fetch_query(query, target, retries=3):
     return collected[:target], users
 
 
+def build_record(tweet, user):
+    followers = None
+    if user is not None:
+        followers = (getattr(user, 'public_metrics', None) or {}).get('followers_count')
+
+    # The raw entities object is a nested dict, which pandas writes as an
+    # unparseable Python repr. Keep only the hashtags as a pipe-separated list
+    # so the column is usable for analysis.
+    entities = tweet.entities or {}
+    hashtags = '|'.join(
+        tag for tag in (h.get('tag', '') for h in (entities.get('hashtags') or [])) if tag
+    )
+
+    return {
+        'id': tweet.id,
+        'matched_queries': '',
+        'username': getattr(user, 'username', None) if user else None,
+        'user_name': getattr(user, 'name', None) if user else None,
+        'user_verified': getattr(user, 'verified', None) if user else None,
+        'user_followers': followers,
+        'user_created_at': getattr(user, 'created_at', None) if user else None,
+        'text': tweet.text,
+        'created_at': tweet.created_at,
+        'lang': tweet.lang,
+        'retweet_count': tweet.public_metrics['retweet_count'],
+        'reply_count': tweet.public_metrics['reply_count'],
+        'like_count': tweet.public_metrics['like_count'],
+        'quote_count': tweet.public_metrics['quote_count'],
+        'hashtags': hashtags,
+    }
+
+
+def write_export(records, path):
+    for key, record in records.items():
+        record['matched_queries'] = '|'.join(record.pop('_queries'))
+    df = pd.DataFrame(list(records.values()), columns=COLUMNS)
+    df.to_csv(path, index=False)
+    return len(df)
+
+
 # Read queries from the text file next to this script, so the tool works
 # regardless of the directory it is launched from.
 def load_queries(path=None):
@@ -87,64 +147,44 @@ def load_queries(path=None):
 def main():
     queries = load_queries()
     count = int(input("Enter the number of queries: "))
+
+    # One collection across every query, keyed by tweet id so a tweet that
+    # matches several terms is recorded once and keeps all of them.
+    records = {}
+
     for query in queries:
         try:
-            # Search for tweets for the current query
             tweets, users = fetch_query(query, count)
 
             if not tweets:
                 print(f"No tweets returned for query '{query}'")
                 continue
 
-            tweets_data = []
-
+            new_ids = 0
             for tweet in tweets:
-                user = users.get(str(tweet.author_id))
-                followers = None
-                if user is not None:
-                    followers = (getattr(user, 'public_metrics', None) or {}).get('followers_count')
+                key = str(tweet.id)
+                if key not in records:
+                    record = build_record(tweet, users.get(str(tweet.author_id)))
+                    record['_queries'] = []
+                    records[key] = record
+                    new_ids += 1
+                if query not in records[key]['_queries']:
+                    records[key]['_queries'].append(query)
 
-                # The raw entities object is a nested dict, which pandas writes as
-                # an unparseable Python repr. Keep only the hashtags as a
-                # pipe-separated list so the column is usable for analysis.
-                entities = tweet.entities or {}
-                hashtags = '|'.join(
-                    tag for tag in (h.get('tag', '') for h in (entities.get('hashtags') or [])) if tag
-                )
-
-                tweets_data.append({
-                    'id': tweet.id,
-                    'username': getattr(user, 'username', None) if user else None,
-                    'user_name': getattr(user, 'name', None) if user else None,
-                    'user_verified': getattr(user, 'verified', None) if user else None,
-                    'user_followers': followers,
-                    'user_created_at': getattr(user, 'created_at', None) if user else None,
-                    'text': tweet.text,
-                    'created_at': tweet.created_at,
-                    'lang': tweet.lang,
-                    'retweet_count': tweet.public_metrics['retweet_count'],
-                    'reply_count': tweet.public_metrics['reply_count'],
-                    'like_count': tweet.public_metrics['like_count'],
-                    'quote_count': tweet.public_metrics['quote_count'],
-                    'hashtags': hashtags
-                })
-
-            # Remove duplicates by data frame
-            df = pd.DataFrame(tweets_data)
-            df.drop_duplicates(subset=['text'], inplace=True)
-    
-            safe_query = query.replace("#", "").replace(" ", "_")
-
-            # Save the DataFrame to a CSV file
-            df.to_csv(f'tweets_{safe_query}.csv', index=False)
-            print(f"Tweets saved to tweets_{safe_query}.csv")
+            print(f"{query}: {len(tweets)} tweets, {new_ids} new")
 
         except Exception as e:
             # Each query is independent. A failure here must not stop the
             # remaining queries, otherwise one bad term discards the whole run.
             print(f"Failed to fetch tweets for query '{query}': {type(e).__name__}: {e}")
 
-    print("All queries processed.")
+    if not records:
+        print("No tweets collected, nothing written.")
+        return
+
+    written = write_export(records, OUTPUT_NAME)
+    print(f"{written} unique tweets saved to {OUTPUT_NAME}")
+
 
 if __name__ == "__main__":
     main()
