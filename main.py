@@ -1,5 +1,6 @@
 import tweepy
 import os
+import json
 import argparse
 from dotenv import load_dotenv
 import pandas as pd
@@ -36,6 +37,7 @@ DEFAULT_PER_QUERY = 100
 MAX_PER_QUERY = 1000
 
 OUTPUT_NAME = 'tweets_all.csv'
+STATE_NAME = '.xmsg_state.json'
 
 COLUMNS = [
     'id',
@@ -118,7 +120,7 @@ def build_record(tweet, user):
 
     return {
         'id': tweet.id,
-        'matched_queries': '',
+        'matched_queries': [],
         'username': getattr(user, 'username', None) if user else None,
         'user_name': getattr(user, 'name', None) if user else None,
         'user_verified': getattr(user, 'verified', None) if user else None,
@@ -136,11 +138,32 @@ def build_record(tweet, user):
 
 
 def write_export(records, path):
-    for key, record in records.items():
-        record['matched_queries'] = '|'.join(record.pop('_queries'))
-    df = pd.DataFrame(list(records.values()), columns=COLUMNS)
+    rows = []
+    for record in records.values():
+        row = dict(record)
+        row['matched_queries'] = '|'.join(row.get('matched_queries') or [])
+        rows.append(row)
+    df = pd.DataFrame(rows, columns=COLUMNS)
     df.to_csv(path, index=False)
     return len(df)
+
+
+def load_state(path):
+    if not os.path.exists(path):
+        return set(), {}
+    with open(path, encoding='utf-8') as file:
+        data = json.load(file)
+    return set(data.get('completed_queries') or []), data.get('records') or {}
+
+
+def save_state(path, completed, records):
+    payload = {'completed_queries': sorted(completed), 'records': records}
+    temp_path = f'{path}.tmp'
+    with open(temp_path, 'w', encoding='utf-8') as file:
+        # Datetimes are not JSON serialisable and are stored as ISO strings;
+        # CSV output renders them the same way.
+        json.dump(payload, file, default=str)
+    os.replace(temp_path, path)
 
 
 def positive_count(value):
@@ -171,6 +194,14 @@ def parse_args(argv=None):
         default=DEFAULT_PER_QUERY,
         metavar='N',
         help=f'tweets to collect per term (default: {DEFAULT_PER_QUERY})')
+    parser.add_argument(
+        '--state',
+        default=STATE_NAME,
+        help=f'checkpoint file used to resume an interrupted run (default: {STATE_NAME})')
+    parser.add_argument(
+        '--restart',
+        action='store_true',
+        help='ignore any existing checkpoint and collect everything again')
     return parser.parse_args(argv)
 
 
@@ -189,33 +220,46 @@ def main(argv=None):
 
     # One collection across every query, keyed by tweet id so a tweet that
     # matches several terms is recorded once and keeps all of them.
-    records = {}
+    completed, records = load_state(args.state)
+    if args.restart:
+        completed, records = set(), {}
+    elif completed:
+        print(f"Resuming: {len(completed)} queries already collected, "
+              f"{len(records)} tweets already stored")
 
     for query in queries:
+        if query in completed:
+            print(f"Skipping '{query}' (already collected)")
+            continue
+
         try:
             tweets, users = fetch_query(query, args.tweets_per_query)
 
             if not tweets:
                 print(f"No tweets returned for query '{query}'")
-                continue
+            else:
+                new_ids = 0
+                for tweet in tweets:
+                    key = str(tweet.id)
+                    if key not in records:
+                        records[key] = build_record(tweet, users.get(str(tweet.author_id)))
+                        new_ids += 1
+                    matched = records[key]['matched_queries']
+                    if query not in matched:
+                        matched.append(query)
 
-            new_ids = 0
-            for tweet in tweets:
-                key = str(tweet.id)
-                if key not in records:
-                    record = build_record(tweet, users.get(str(tweet.author_id)))
-                    record['_queries'] = []
-                    records[key] = record
-                    new_ids += 1
-                if query not in records[key]['_queries']:
-                    records[key]['_queries'].append(query)
-
-            print(f"{query}: {len(tweets)} tweets, {new_ids} new")
+                print(f"{query}: {len(tweets)} tweets, {new_ids} new")
 
         except Exception as e:
             # Each query is independent. A failure here must not stop the
             # remaining queries, otherwise one bad term discards the whole run.
             print(f"Failed to fetch tweets for query '{query}': {type(e).__name__}: {e}")
+            continue
+
+        # Only a query that finished without raising is recorded as done, so a
+        # failure is retried on the next run instead of being skipped forever.
+        completed.add(query)
+        save_state(args.state, completed, records)
 
     if not records:
         print("No tweets collected, nothing written.")
