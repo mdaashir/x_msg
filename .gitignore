@@ -27,3 +27,9 @@ fabric.properties
 # Python Environment
 venv/*
 .env
+
+# Generated tweet exports
+tweets_*.csv
+
+# Resume checkpoint written during a collection run
+.xmsg_state.json
